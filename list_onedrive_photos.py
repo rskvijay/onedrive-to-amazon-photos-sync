@@ -3,7 +3,7 @@
 List OneDrive Photos and write to CSV.
 
 Use --list-onedrive-photos with --csv PATH to enumerate all files (folders excluded).
-CSV columns: id, file_name (absolute path), size_human, size_bytes, created_date, last_modified_date.
+CSV columns: id, file_path, size_human, size_bytes, mime_type, content_date, created_date, last_modified_date, sha1_hash, quickxor_hash, web_url.
 """
 from __future__ import annotations
 
@@ -16,19 +16,24 @@ from formatters import format_date_iso, format_size
 from onedrive_auth import get_access_token
 from onedrive_graph_client import list_children_by_id, list_photos_children
 
-# OneDrive CSV columns (files only; no md5 or content_date in Graph API)
+# OneDrive CSV columns (files only)
 ONEDRIVE_CSV_HEADER = [
     "id",
-    "file_name",
+    "file_path",
     "size_human",
     "size_bytes",
+    "mime_type",
+    "content_date",
     "created_date",
     "last_modified_date",
+    "sha1_hash",
+    "quickxor_hash",
+    "web_url",
 ]
 
 
 def _build_row(item: dict, absolute_path: str) -> list:
-    """Build a CSV row for one file. file_name is the absolute path."""
+    """Build a CSV row for one file. file_path is the absolute path."""
     size = item.get("size")
     if size is not None:
         try:
@@ -40,16 +45,30 @@ def _build_row(item: dict, absolute_path: str) -> list:
     size_human = format_size(size_int) if size_int is not None else "0"
     size_bytes = str(size_int) if size_int is not None else ""
 
+    file_facet = item.get("file") or {}
+    photo_facet = item.get("photo") or {}
+    hashes = file_facet.get("hashes") or {}
+
+    mime_type = file_facet.get("mimeType") or ""
+    sha1_hash = hashes.get("sha1Hash") or ""
+    quickxor_hash = hashes.get("quickXorHash") or ""
+    content_date = format_date_iso(photo_facet.get("takenDateTime"))
     created = format_date_iso(item.get("createdDateTime"))
     last_modified = format_date_iso(item.get("lastModifiedDateTime"))
+    web_url = item.get("webUrl") or ""
 
     return [
         item.get("id", ""),
         absolute_path,
         size_human,
         size_bytes,
+        mime_type,
+        content_date,
         created,
         last_modified,
+        sha1_hash,
+        quickxor_hash,
+        web_url,
     ]
 
 

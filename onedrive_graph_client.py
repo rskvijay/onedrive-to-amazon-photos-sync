@@ -4,7 +4,7 @@ import requests
 
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
-_ITEM_FIELDS = "id,name,size,createdDateTime,lastModifiedDateTime,folder,file"
+_ITEM_FIELDS = "id,name,size,createdDateTime,lastModifiedDateTime,folder,file,photo,webUrl"
 
 
 def _list_children(
