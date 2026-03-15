@@ -21,6 +21,7 @@ from rich.progress import Progress, TaskID
 
 from client import get_amazon_client
 from formatters import format_size
+from list_onedrive_photos import run_list_onedrive_photos
 
 # Page size for Amazon Photos search API (must match library constant)
 SEARCH_PAGE_SIZE = 200
@@ -168,6 +169,25 @@ def _query_parallel(ap, filters: str, limit: float = math.inf, max_workers: int 
     )
 
 
+def _confirm_overwrite(csv_path: Path | str) -> None:
+    """If csv_path exists, prompt to confirm overwrite. Exits with 1 if user declines."""
+    csv_path = Path(csv_path)
+    if not csv_path.exists():
+        return
+    if not typer.confirm(f"File '{csv_path}' already exists. Overwrite?", default=False):
+        console.print("[yellow]Aborted.[/yellow]")
+        raise typer.Exit(1)
+
+
+def run_list_missing(
+    amazon_csv: Path | None = None,
+    csv_path: Path | None = None,
+    threads: int = 16,
+) -> None:
+    """List OneDrive items that are not in Amazon Photos (by md5). Optionally use --amazon-csv to skip API fetch; --csv for report path."""
+    raise NotImplementedError("--list-missing is not implemented yet")
+
+
 def run_list_amazon_photos(csv_path: Path, threads: int = 16) -> None:
     """Enumerate all items from Amazon Photos and write CSV to csv_path."""
     start = time.perf_counter()
@@ -222,10 +242,26 @@ def main(
         "--list-amazon-photos",
         help="Enumerate all items from Amazon Photos (photos and videos).",
     ),
+    list_onedrive_photos: bool = typer.Option(
+        False,
+        "--list-onedrive-photos",
+        help="Enumerate all items from OneDrive Photos (photos and videos).",
+    ),
+    list_missing: bool = typer.Option(
+        False,
+        "--list-missing",
+        help="List OneDrive items that are not in Amazon Photos (by md5).",
+    ),
     csv_path: str | None = typer.Option(
         None,
         "--csv",
-        help="Path to save CSV output (required when using --list-amazon-photos).",
+        help="Path to save CSV output (required when using --list-amazon-photos, --list-onedrive-photos, or --list-missing).",
+        path_type=Path,
+    ),
+    amazon_csv: Path | None = typer.Option(
+        None,
+        "--amazon-csv",
+        help="Optional path to existing Amazon Photos CSV (for --list-missing). If not set, items are fetched from the API.",
         path_type=Path,
     ),
     threads: int = typer.Option(
@@ -236,26 +272,60 @@ def main(
         help="Number of parallel request threads (1–64). Default 16.",
     ),
 ) -> None:
-    """List Amazon Photos and optionally save to CSV."""
+    """List Amazon Photos or OneDrive Photos and save to CSV."""
     if ctx.invoked_subcommand is not None:
+        return
+
+    if sum([list_amazon_photos, list_onedrive_photos, list_missing]) > 1:
+        console.print(
+            "[red]Use only one of --list-amazon-photos, --list-onedrive-photos, or --list-missing.[/red]"
+        )
+        raise typer.Exit(1)
+
+    if list_missing:
+        if not csv_path:
+            console.print(
+                "[red]When using --list-missing, --csv PATH is required.[/red]\n"
+                "Example: ./run --list-missing --csv missing.csv"
+            )
+            raise typer.Exit(1)
+        _confirm_overwrite(csv_path)
+        run_list_missing(amazon_csv=amazon_csv, csv_path=csv_path, threads=threads)
         return
 
     if list_amazon_photos:
         if not csv_path:
             console.print(
                 "[red]When using --list-amazon-photos, --csv PATH is required.[/red]\n"
-                "Example: python list_amazon_photos.py --list-amazon-photos --csv amazon_photos.csv"
+                "Example: ./run --list-amazon-photos --csv amazon_photos.csv"
             )
             raise typer.Exit(1)
+        _confirm_overwrite(csv_path)
         run_list_amazon_photos(csv_path, threads=threads)
         return
 
-    if csv_path:
-        console.print("[yellow]--csv is ignored unless --list-amazon-photos is set.[/yellow]")
+    if list_onedrive_photos:
+        if not csv_path:
+            console.print(
+                "[red]When using --list-onedrive-photos, --csv PATH is required.[/red]\n"
+                "Example: ./run --list-onedrive-photos --csv onedrive_photos.csv"
+            )
+            raise typer.Exit(1)
+        _confirm_overwrite(csv_path)
+        run_list_onedrive_photos(csv_path, threads=threads)
         return
 
-    console.print("Use [bold]--list-amazon-photos --csv PATH[/bold] to enumerate Amazon Photos and save to CSV.")
-    console.print("Example: python list_amazon_photos.py --list-amazon-photos --csv amazon_photos.csv")
+    if csv_path or amazon_csv:
+        console.print(
+            "[yellow]--csv and --amazon-csv are ignored unless used with the matching list option.[/yellow]"
+        )
+        return
+
+    console.print("Options: [bold]--list-amazon-photos --csv PATH[/bold], [bold]--list-onedrive-photos --csv PATH[/bold], [bold]--list-missing --csv PATH [--amazon-csv PATH][/bold].")
+    console.print("Examples:")
+    console.print("  ./run --list-amazon-photos --csv amazon_photos.csv")
+    console.print("  ./run --list-onedrive-photos --csv onedrive_photos.csv")
+    console.print("  ./run --list-missing --csv missing.csv")
 
 
 if __name__ == "__main__":

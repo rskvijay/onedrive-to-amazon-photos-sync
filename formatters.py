@@ -1,4 +1,6 @@
-"""Human-readable formatting for size (and duration if needed later)."""
+"""Human-readable formatting for size and dates."""
+
+from datetime import datetime
 
 
 def format_size(num_bytes) -> str:
@@ -18,3 +20,15 @@ def format_size(num_bytes) -> str:
             return f"{n:.1f}{unit}".rstrip("0").rstrip(".")
         n /= 1024
     return f"{n:.1f}T".rstrip("0").rstrip(".")
+
+
+def format_date_iso(iso_str: str | None) -> str:
+    """Format ISO 8601 string from API as 'Jan 21 2017 14:30'. Returns '' for missing or invalid."""
+    if not iso_str:
+        return ""
+    s = (iso_str[:19] or "").replace("T", " ")
+    try:
+        dt = datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+        return dt.strftime("%b %d %Y %H:%M")
+    except ValueError:
+        return ""
