@@ -22,6 +22,13 @@ from rich.progress import Progress, TaskID
 from client import get_amazon_client
 from formatters import format_size
 from list_onedrive_photos import run_list_onedrive_photos
+from upload_missing import (
+    CLI_HELP_UPLOAD_EXECUTE,
+    CLI_HELP_UPLOAD_LIMIT,
+    CLI_HELP_UPLOAD_MISSING,
+    CLI_HELP_UPLOAD_DRY_RUN,
+    run_upload_missing_cli,
+)
 
 # Page size for Amazon Photos search API (must match library constant)
 SEARCH_PAGE_SIZE = 200
@@ -179,15 +186,6 @@ def _confirm_overwrite(csv_path: Path | str) -> None:
         raise typer.Exit(1)
 
 
-def run_list_missing(
-    amazon_csv: Path | None = None,
-    csv_path: Path | None = None,
-    threads: int = 16,
-) -> None:
-    """List OneDrive items that are not in Amazon Photos (by md5). Optionally use --amazon-csv to skip API fetch; --csv for report path."""
-    raise NotImplementedError("--list-missing is not implemented yet")
-
-
 def run_list_amazon_photos(csv_path: Path, threads: int = 16) -> None:
     """Enumerate all items from Amazon Photos and write CSV to csv_path."""
     start = time.perf_counter()
@@ -252,16 +250,37 @@ def main(
         "--list-missing",
         help="List OneDrive items that are not in Amazon Photos (by md5).",
     ),
+    upload_missing: bool = typer.Option(
+        False,
+        "--upload-missing",
+        help=CLI_HELP_UPLOAD_MISSING,
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help=CLI_HELP_UPLOAD_DRY_RUN,
+    ),
+    execute_upload: bool = typer.Option(
+        False,
+        "--execute",
+        help=CLI_HELP_UPLOAD_EXECUTE,
+    ),
     csv_path: str | None = typer.Option(
         None,
         "--csv",
-        help="Path to save CSV output (required when using --list-amazon-photos, --list-onedrive-photos, or --list-missing).",
+        help="Path to CSV (required for list/upload modes). For --list-missing, --download-dir is also required. For --upload-missing, use missing.csv from --list-missing.",
         path_type=Path,
     ),
     amazon_csv: Path | None = typer.Option(
         None,
         "--amazon-csv",
         help="Optional path to existing Amazon Photos CSV (for --list-missing). If not set, items are fetched from the API.",
+        path_type=Path,
+    ),
+    download_dir: Path | None = typer.Option(
+        None,
+        "--download-dir",
+        help="Directory to download OneDrive files into (required for --list-missing). Files already in Amazon are removed; only missing files remain for Phase 2 upload.",
         path_type=Path,
     ),
     threads: int = typer.Option(
@@ -271,26 +290,50 @@ def main(
         max=64,
         help="Number of parallel request threads (1–64). Default 16.",
     ),
+    upload_limit: int | None = typer.Option(
+        None,
+        "--limit",
+        min=1,
+        help=CLI_HELP_UPLOAD_LIMIT,
+    ),
 ) -> None:
     """List Amazon Photos or OneDrive Photos and save to CSV."""
     if ctx.invoked_subcommand is not None:
         return
 
-    if sum([list_amazon_photos, list_onedrive_photos, list_missing]) > 1:
+    if sum([list_amazon_photos, list_onedrive_photos, list_missing, upload_missing]) > 1:
         console.print(
-            "[red]Use only one of --list-amazon-photos, --list-onedrive-photos, or --list-missing.[/red]"
+            "[red]Use only one of --list-amazon-photos, --list-onedrive-photos, --list-missing, or --upload-missing.[/red]"
         )
         raise typer.Exit(1)
+
+    if upload_missing:
+        run_upload_missing_cli(
+            csv_path,
+            dry_run=dry_run,
+            execute_upload=execute_upload,
+            threads=threads,
+            limit=upload_limit,
+        )
+        return
 
     if list_missing:
         if not csv_path:
             console.print(
                 "[red]When using --list-missing, --csv PATH is required.[/red]\n"
-                "Example: ./run --list-missing --csv missing.csv"
+                "Example: ./run --list-missing --csv missing.csv --download-dir ./staging"
+            )
+            raise typer.Exit(1)
+        if not download_dir:
+            console.print(
+                "[red]When using --list-missing, --download-dir PATH is required.[/red]\n"
+                "Example: ./run --list-missing --csv missing.csv --download-dir ./staging"
             )
             raise typer.Exit(1)
         _confirm_overwrite(csv_path)
-        run_list_missing(amazon_csv=amazon_csv, csv_path=csv_path, threads=threads)
+        from list_missing import run_list_missing
+
+        run_list_missing(amazon_csv=amazon_csv, csv_path=csv_path, download_dir=download_dir, threads=threads)
         return
 
     if list_amazon_photos:
@@ -315,17 +358,23 @@ def main(
         run_list_onedrive_photos(csv_path, threads=threads)
         return
 
-    if csv_path or amazon_csv:
+    if csv_path or amazon_csv or dry_run or execute_upload:
         console.print(
-            "[yellow]--csv and --amazon-csv are ignored unless used with the matching list option.[/yellow]"
+            "[yellow]--csv / --amazon-csv / --dry-run / --execute are ignored unless used with the matching option.[/yellow]"
         )
         return
 
-    console.print("Options: [bold]--list-amazon-photos --csv PATH[/bold], [bold]--list-onedrive-photos --csv PATH[/bold], [bold]--list-missing --csv PATH [--amazon-csv PATH][/bold].")
+    console.print(
+        "Options: [bold]--list-amazon-photos --csv PATH[/bold], [bold]--list-onedrive-photos --csv PATH[/bold], "
+        "[bold]--list-missing --csv PATH --download-dir PATH[/bold], "
+        "[bold]--upload-missing --csv PATH (--dry-run | --execute)[/bold]."
+    )
     console.print("Examples:")
     console.print("  ./run --list-amazon-photos --csv amazon_photos.csv")
     console.print("  ./run --list-onedrive-photos --csv onedrive_photos.csv")
-    console.print("  ./run --list-missing --csv missing.csv")
+    console.print("  ./run --list-missing --csv missing.csv --download-dir ./staging")
+    console.print("  ./run --upload-missing --csv missing.csv --dry-run")
+    console.print("  ./run --upload-missing --csv missing.csv --execute")
 
 
 if __name__ == "__main__":

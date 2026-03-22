@@ -16,6 +16,35 @@ from formatters import format_date_iso, format_size
 from onedrive_auth import get_access_token
 from onedrive_graph_client import list_children_by_id, list_photos_children
 
+
+def _item_to_file_dict(item: dict, absolute_path: str) -> dict:
+    """Build a dict for one file (id, name, file_path, content_date, size, mime_type, created_date, last_modified_date)."""
+    size = item.get("size")
+    if size is not None:
+        try:
+            size_int = int(size)
+        except (TypeError, ValueError):
+            size_int = None
+    else:
+        size_int = None
+    file_facet = item.get("file") or {}
+    photo_facet = item.get("photo") or {}
+    mime_type = file_facet.get("mimeType") or ""
+    content_date = format_date_iso(photo_facet.get("takenDateTime"))
+    created = format_date_iso(item.get("createdDateTime"))
+    last_modified = format_date_iso(item.get("lastModifiedDateTime"))
+    return {
+        "id": item.get("id", ""),
+        "name": item.get("name", ""),
+        "file_path": absolute_path,
+        "content_date": content_date,
+        "size": size_int,
+        "size_bytes": str(size_int) if size_int is not None else "",
+        "mime_type": mime_type,
+        "created_date": created,
+        "last_modified_date": last_modified,
+    }
+
 # OneDrive CSV columns (files only)
 ONEDRIVE_CSV_HEADER = [
     "id",
@@ -129,6 +158,87 @@ def _count_files(access_token: str, max_workers: int) -> int:
             for f in pending:
                 f.result()
     return count[0]
+
+
+def _collect_files_recursive(
+    access_token: str,
+    folder_id: str,
+    path_prefix: str,
+    out: list[dict],
+    write_lock: Lock,
+    executor: ThreadPoolExecutor,
+    item_count: list[int],
+    futures: list,
+    futures_lock: Lock,
+) -> None:
+    """Recursively list items; append file dicts (from _item_to_file_dict) to out."""
+    children = list_children_by_id(access_token, folder_id)
+    for item in children:
+        name = item.get("name", "")
+        absolute_path = f"{path_prefix}/{name}" if path_prefix else f"/{name}"
+        if not item.get("folder"):
+            d = _item_to_file_dict(item, absolute_path)
+            with write_lock:
+                out.append(d)
+                item_count[0] += 1
+        if item.get("folder"):
+            f = executor.submit(
+                _collect_files_recursive,
+                access_token,
+                item["id"],
+                absolute_path,
+                out,
+                write_lock,
+                executor,
+                item_count,
+                futures,
+                futures_lock,
+            )
+            with futures_lock:
+                futures.append(f)
+
+
+def collect_onedrive_file_items(access_token: str, threads: int = 16) -> list[dict]:
+    """Enumerate all files under OneDrive Photos (no folders). Returns list of dicts with id, name, file_path, content_date, size, mime_type, created_date, last_modified_date."""
+    items = list_photos_children(access_token, top=999)
+    out: list[dict] = []
+    write_lock = Lock()
+    futures_lock = Lock()
+    item_count = [0]
+    futures: list = []
+
+    with ThreadPoolExecutor(max_workers=threads) as executor:
+        for item in items:
+            name = item.get("name", "")
+            absolute_path = f"/{name}"
+            if not item.get("folder"):
+                d = _item_to_file_dict(item, absolute_path)
+                with write_lock:
+                    out.append(d)
+                    item_count[0] += 1
+            if item.get("folder"):
+                f = executor.submit(
+                    _collect_files_recursive,
+                    access_token,
+                    item["id"],
+                    absolute_path,
+                    out,
+                    write_lock,
+                    executor,
+                    item_count,
+                    futures,
+                    futures_lock,
+                )
+                with futures_lock:
+                    futures.append(f)
+        while True:
+            with futures_lock:
+                pending = [f for f in futures if not f.done()]
+            if not pending:
+                break
+            for f in pending:
+                f.result()
+    return out
 
 
 def _list_photos_recursive(

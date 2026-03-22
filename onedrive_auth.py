@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from threading import Lock
 
 import msal
 
@@ -12,6 +13,9 @@ AUTHORITY = "https://login.microsoftonline.com/common"
 
 # Token cache in project directory
 _CACHE_PATH = Path(__file__).resolve().parent / ".onedrive_token_cache.bin"
+
+# Serialize token refresh (MSAL + disk cache) when many threads hit 401 at once
+_token_lock = Lock()
 
 
 def get_client_id() -> str:
@@ -52,29 +56,35 @@ def save_cache(app: msal.PublicClientApplication) -> None:
 def get_access_token() -> str:
     """
     Obtain an access token for Microsoft Graph using device code flow.
-    Uses cached tokens when valid; otherwise prompts user to sign in via device code.
+
+    Uses MSAL's token cache: ``acquire_token_silent`` returns a valid access token and
+    refreshes it with the refresh token when the previous access token has expired.
+
+    **Call this again** after long runs (e.g. >~1 hour) or on HTTP 401 from Graph — do not
+    hold a single access token string for the entire process lifetime.
     """
-    client_id = get_client_id()
-    app = build_app(client_id)
-    load_cache(app)
+    with _token_lock:
+        client_id = get_client_id()
+        app = build_app(client_id)
+        load_cache(app)
 
-    accounts = app.get_accounts()
-    if accounts:
-        result = app.acquire_token_silent(DELEGATED_SCOPES, account=accounts[0])
-        if result:
-            save_cache(app)
-            return result["access_token"]
+        accounts = app.get_accounts()
+        if accounts:
+            result = app.acquire_token_silent(DELEGATED_SCOPES, account=accounts[0])
+            if result:
+                save_cache(app)
+                return result["access_token"]
 
-    flow = app.initiate_device_flow(scopes=DELEGATED_SCOPES)
-    if "message" not in flow:
-        raise SystemExit(f"Failed to create device flow: {flow.get('error_description', flow)}")
+        flow = app.initiate_device_flow(scopes=DELEGATED_SCOPES)
+        if "message" not in flow:
+            raise SystemExit(f"Failed to create device flow: {flow.get('error_description', flow)}")
 
-    print(flow["message"])
-    result = app.acquire_token_by_device_flow(flow)
-    if "access_token" not in result:
-        raise SystemExit(
-            f"Authentication failed: {result.get('error_description', result)}"
-        )
+        print(flow["message"])
+        result = app.acquire_token_by_device_flow(flow)
+        if "access_token" not in result:
+            raise SystemExit(
+                f"Authentication failed: {result.get('error_description', result)}"
+            )
 
-    save_cache(app)
-    return result["access_token"]
+        save_cache(app)
+        return result["access_token"]

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pandas as pd
 import typer
@@ -10,8 +11,32 @@ import typer
 # (and to allow patching before first use)
 
 
+def reload_project_dotenv() -> None:
+    """
+    Reload ``.env`` from the project directory (next to this file) with ``override=True``.
+
+    Use this before reading env-dependent options, or so fresh ``AMAZON_*`` cookies saved to
+    ``.env`` during a long run (e.g. after staging) are visible in ``os.environ``.
+    """
+    env_path = Path(__file__).resolve().parent / ".env"
+    if not env_path.is_file():
+        return
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(env_path, override=True)
+    except Exception:
+        pass
+
+
 def get_amazon_client(console):
-    """Build AmazonPhotos client from environment variables. Exits with error if auth missing."""
+    """
+    Build AmazonPhotos client from environment variables. Exits with error if auth missing.
+
+    Always reloads project ``.env`` from disk first so updated ``AMAZON_*`` values take effect.
+    """
+    reload_project_dotenv()
+
     session_id = os.environ.get("AMAZON_SESSION_ID")
     ubid = os.environ.get("AMAZON_UBID_MAIN") or os.environ.get("AMAZON_UBID_ACBCA")
     at = os.environ.get("AMAZON_AT_MAIN") or os.environ.get("AMAZON_AT_ACBCA")
